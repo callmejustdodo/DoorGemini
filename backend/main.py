@@ -8,13 +8,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.gemini_session import GeminiSession
 from backend.models import DoorbellSession, Notification
+from backend.tools.telegram import answer_callback_query, set_webhook
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,10 @@ FRAME_CONTROL = 0x03
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("AI Doorbell starting up")
+    # Register Telegram webhook if configured
+    if settings.WEBHOOK_BASE_URL and settings.TELEGRAM_BOT_TOKEN:
+        webhook_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/api/telegram/webhook"
+        await set_webhook(webhook_url)
     yield
     # Cleanup on shutdown
     global active_session
@@ -195,17 +200,24 @@ async def get_notifications():
     return [n.model_dump() for n in notifications]
 
 
-@app.post("/api/owner/command")
-async def owner_command(payload: dict):
-    """Relay homeowner command from Telegram webhook to active Gemini session.
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Telegram webhook endpoint — handles callback_query from inline buttons.
 
-    Uses send_realtime_input(text=...) — this is new user input, not conversation history.
+    Flow: Owner taps button -> Telegram sends callback_query -> we inject text
+    into the active Gemini session via send_realtime_input(text=...).
     """
     global active_session
 
-    # Handle Telegram callback_query
-    callback_query = payload.get("callback_query", {})
+    payload = await request.json()
+
+    # Handle callback_query (inline button press)
+    callback_query = payload.get("callback_query")
+    if not callback_query:
+        return JSONResponse({"ok": True})
+
     callback_data = callback_query.get("data", "")
+    callback_query_id = callback_query.get("id", "")
 
     command_map = {
         "let_in": "The homeowner says: Tell them to come in, they are welcome.",
@@ -214,9 +226,41 @@ async def owner_command(payload: dict):
     }
 
     text = command_map.get(callback_data)
+
     if text and active_session:
         await active_session.inject_text(text)
-        return JSONResponse({"status": "relayed", "command": callback_data})
+        # Answer callback to dismiss Telegram loading indicator
+        await answer_callback_query(callback_query_id, f"Command sent: {callback_data}")
+        logger.info("Owner command relayed: %s", callback_data)
+        return JSONResponse({"ok": True, "relayed": callback_data})
+
+    if callback_query_id:
+        await answer_callback_query(callback_query_id, "No active session")
+
+    return JSONResponse({"ok": True, "relayed": None})
+
+
+@app.post("/api/owner/command")
+async def owner_command(payload: dict):
+    """Direct owner command endpoint (for testing without Telegram).
+
+    Uses send_realtime_input(text=...) — this is new user input, not conversation history.
+    """
+    global active_session
+
+    command = payload.get("command", "")
+    text = payload.get("text", "")
+
+    command_map = {
+        "let_in": "The homeowner says: Tell them to come in, they are welcome.",
+        "wait": "The homeowner says: Please ask them to wait a moment.",
+        "decline": "The homeowner says: Please politely decline and ask them to leave.",
+    }
+
+    inject_text = command_map.get(command, text)
+    if inject_text and active_session:
+        await active_session.inject_text(inject_text)
+        return JSONResponse({"status": "relayed", "command": command or "custom"})
 
     return JSONResponse({"status": "no_active_session"}, status_code=404)
 
