@@ -140,7 +140,7 @@ AI: "If you're unable to verify, please check with the delivery company again. T
 
 Display architecture diagram + technical summary:
 > "Real-time bidirectional video + audio streaming via Gemini Live API.
-> Agent orchestration via ADK.
+> Agent orchestration via google-genai SDK.
 > Google Calendar, Gmail, and Telegram integrated through tool calling.
 > Deployed on Cloud Run via Terraform."
 
@@ -235,7 +235,7 @@ Display architecture diagram + technical summary:
 │  (Telegram)  │────────▶│    │   └── Photo Capture            │
 │              │ Commands │    │       + Cloud Storage          │
 └──────────────┘         │    │                                │
-                          │    └── ADK Orchestration            │
+                          │    └── google-genai SDK              │
                           └─────────────────────────────────────┘
 ```
 
@@ -258,12 +258,12 @@ Display architecture diagram + technical summary:
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Frontend | Next.js + Tailwind | Camera feed + subtitle UI |
-| Camera/Audio | WebRTC MediaStream API | Browser webcam + microphone capture |
-| Real-time Comm | WebSocket | Frontend ↔ backend bidirectional streaming |
+| Frontend | Vanilla HTML/JS (single page) | Camera feed + subtitle UI, served as static file from FastAPI |
+| Camera/Audio | WebRTC MediaStream API | Browser webcam + microphone capture via AudioWorkletNode |
+| Real-time Comm | WebSocket (binary frames) | Frontend ↔ backend bidirectional streaming |
 | Backend | FastAPI (Python) | Deployed on Cloud Run |
 | AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-2.5-flash-native-audio-preview-12-2025` |
-| Agent Framework | Google ADK | Agent orchestration |
+| AI SDK | `google-genai` (Python) | Direct SDK for Live API sessions + tool dispatch |
 | Storage | Google Cloud Storage | Screenshots, logs |
 | Notifications | Telegram Bot API | Homeowner alerts + bidirectional commands |
 | IaC / Deployment | Terraform + Cloud Build | Cloud Run, Cloud Storage, IAM, networking |
@@ -306,23 +306,25 @@ Frontend (phone browser)              Backend (Cloud Run)              Gemini Li
 
 ## 8. Agent Design
 
-### 8.1 ADK Agent Architecture
+### 8.1 Agent Architecture (google-genai SDK)
 
 ```
-ADK Orchestrator
-├── DoorbellAgent (Main)
-│   ├── Model: Gemini Live API
-│   ├── Input: Real-time video + audio stream
-│   ├── Output: Audio responses
-│   └── Tools: check_gmail_orders, check_calendar,
-│              check_known_faces, send_telegram_alert,
-│              capture_screenshot
-│
-└── NotifierAgent
-    ├── Model: Gemini (text, for summary)
-    ├── Input: Event from DoorbellAgent
-    └── Output: Telegram notification
+DoorbellAgent (google-genai Live API session)
+├── Model: gemini-2.5-flash-native-audio-preview-12-2025
+├── Input: Real-time video + audio stream
+├── Output: Audio responses
+├── Config:
+│   ├── response_modalities: [AUDIO]
+│   ├── context_window_compression: enabled
+│   ├── session_resumption: enabled
+│   ├── input_transcription: enabled (visitor subtitles)
+│   └── output_transcription: enabled (AI subtitles)
+└── Tools: check_gmail_orders, check_calendar,
+           check_known_faces, send_telegram_alert,
+           capture_screenshot
 ```
+
+**Note**: ADK is not used. The `google-genai` SDK provides direct Live API session management via `client.aio.live.connect()`. Telegram message formatting is inlined in `send_telegram_alert` — no separate NotifierAgent needed.
 
 ### 8.2 System Prompt
 
@@ -680,7 +682,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 | Requirement | How We Meet It |
 |---|---|
 | Gemini model usage | Gemini Live API (gemini-2.5-flash-native-audio-preview-12-2025) — entire AI core |
-| Google GenAI SDK / ADK | ADK for agent orchestration |
+| Google GenAI SDK / ADK | google-genai SDK for Live API sessions + tool dispatch |
 | Google Cloud services (1+) | Cloud Run (deployment) + Cloud Storage (screenshots) |
 | Multimodal input/output | Video + Audio in → Audio out + Text (Telegram) |
 | Live Agent track required tech | Gemini Live API usage, Google Cloud hosting |
@@ -732,7 +734,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 - [ ] Set up Terraform backend (GCS bucket for state)
 - [ ] Write initial Terraform configs + `terraform plan` test
 - [ ] Deploy test service to Cloud Run via `deploy.sh`
-- [ ] Install ADK + verify basic agent operation
+- [ ] Install google-genai SDK + verify Live API session with tool calling
 - [ ] Test phone browser camera + mic → WebSocket transmission
 - [ ] Create GitHub repo
 
