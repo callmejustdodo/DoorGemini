@@ -128,7 +128,7 @@ Control message types:
 ## 6. Agent Design
 
 ```
-DoorbellAgent (google-genai Live API session)
+DoorbellAgent (google-genai Live API session via gemini_session.py)
 ├── Model: gemini-2.5-flash-native-audio-preview-12-2025
 ├── Input: Real-time video + audio stream
 ├── Output: Audio responses
@@ -329,11 +329,12 @@ scripts/
 ```dockerfile
 FROM python:3.12-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY backend/ ./backend/
+COPY data/ ./data/
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
 ---
@@ -347,7 +348,10 @@ AI-Doorbell/
 │   ├── config.py            # pydantic-settings: env vars
 │   ├── models.py            # Pydantic data models
 │   ├── requirements.txt     # google-genai, fastapi, uvicorn, etc.
-│   ├── doorbell_agent.py    # Gemini Live API session + tool dispatch
+│   ├── gemini_session.py    # Gemini Live API session + tool dispatch
+│   ├── static/
+│   │   ├── index.html               # Single-page vanilla JS doorbell UI
+│   │   └── audio-worklet-processor.js  # AudioWorkletNode for capture + playback
 │   └── tools/
 │       ├── __init__.py
 │       ├── gmail.py         # check_gmail_orders
@@ -355,11 +359,6 @@ AI-Doorbell/
 │       ├── known_faces.py   # check_known_faces
 │       ├── telegram.py      # send_telegram_alert (with inline formatting)
 │       └── screenshot.py    # capture_screenshot
-│
-├── frontend/
-│   └── index.html           # Single-page vanilla JS app
-│                             # Camera feed, AudioWorkletNode, WebSocket client,
-│                             # subtitle overlay, status indicator
 │
 ├── infra/                   # Terraform IaC
 │   ├── main.tf
