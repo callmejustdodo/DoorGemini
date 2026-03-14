@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     LANGUAGE: str = "en"
     DELIVERY_INSTRUCTIONS: str = "Please leave it at the door"
 
+    # Voice
+    VOICE_NAME: str = "Puck"
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8080

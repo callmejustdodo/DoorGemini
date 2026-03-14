@@ -154,6 +154,7 @@ class GeminiSession:
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.tool_handlers = tool_handlers or {}
         self.session = None
+        self._ctx_manager = None
         self._resumption_handle: str = ""
         self._last_video_frame: bytes | None = None
         self._running = False
@@ -174,6 +175,13 @@ class GeminiSession:
 
         return types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=settings.VOICE_NAME,
+                    )
+                )
+            ),
             system_instruction=types.Content(
                 parts=[types.Part(text=system_prompt)]
             ),
@@ -192,10 +200,11 @@ class GeminiSession:
     async def connect(self):
         """Establish a Gemini Live API session."""
         config = self._build_config()
-        self.session = await self.client.aio.live.connect(
+        self._ctx_manager = self.client.aio.live.connect(
             model=settings.GEMINI_MODEL,
             config=config,
-        ).__aenter__()
+        )
+        self.session = await self._ctx_manager.__aenter__()
         self._running = True
         self._receive_task = asyncio.create_task(self._receive_loop())
         logger.info("Gemini session connected")
@@ -210,11 +219,12 @@ class GeminiSession:
             except asyncio.CancelledError:
                 pass
             self._receive_task = None
-        if self.session:
+        if self._ctx_manager:
             try:
-                await self.session.__aexit__(None, None, None)
+                await self._ctx_manager.__aexit__(None, None, None)
             except Exception:
                 pass
+            self._ctx_manager = None
             self.session = None
         logger.info("Gemini session disconnected")
 
@@ -255,15 +265,26 @@ class GeminiSession:
         """Main loop to receive and process messages from Gemini."""
         try:
             while self._running and self.session:
-                async for response in self.session.receive():
+                try:
+                    async for response in self.session.receive():
+                        if not self._running:
+                            break
+                        await self._handle_response(response)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
                     if not self._running:
                         break
-                    await self._handle_response(response)
+                    logger.error("Gemini receive error: %s", e)
+                    if self._resumption_handle:
+                        await self._attempt_resumption()
+                    else:
+                        logger.error("No resumption handle, stopping receive loop")
+                        break
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error("Gemini receive loop error: %s", e)
-            await self._attempt_resumption()
+            logger.error("Gemini receive loop fatal error: %s", e)
 
     async def _handle_response(self, response):
         """Process a single response from Gemini."""
@@ -351,7 +372,7 @@ class GeminiSession:
                 )
 
         if responses and self.session:
-            await self.session.send_tool_response(responses)
+            await self.session.send_tool_response(function_responses=responses)
 
     async def _attempt_resumption(self):
         """Attempt session resumption with stored handle."""
@@ -365,17 +386,18 @@ class GeminiSession:
 
         for attempt in range(max_retries):
             try:
-                if self.session:
+                if self._ctx_manager:
                     try:
-                        await self.session.__aexit__(None, None, None)
+                        await self._ctx_manager.__aexit__(None, None, None)
                     except Exception:
                         pass
 
                 config = self._build_config()
-                self.session = await self.client.aio.live.connect(
+                self._ctx_manager = self.client.aio.live.connect(
                     model=settings.GEMINI_MODEL,
                     config=config,
-                ).__aenter__()
+                )
+                self.session = await self._ctx_manager.__aenter__()
                 logger.info("Session resumed successfully on attempt %d", attempt + 1)
                 return
             except Exception as e:
