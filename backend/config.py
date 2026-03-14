@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     DELIVERY_INSTRUCTIONS: str = "Please leave it at the door"
 
     # Voice
-    VOICE_NAME: str = "Puck"
+    VOICE_NAME: str = "Kore"
 
     # Server
     HOST: str = "0.0.0.0"

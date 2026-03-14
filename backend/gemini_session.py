@@ -159,6 +159,8 @@ class GeminiSession:
         self._last_video_frame: bytes | None = None
         self._running = False
         self._receive_task: asyncio.Task | None = None
+        self._audio_logged = False
+        self._video_logged = False
 
         # Callbacks for forwarding data to the WebSocket client
         self.on_audio: Callable[[bytes], Any] | None = None
@@ -232,6 +234,9 @@ class GeminiSession:
         """Send audio PCM data to Gemini. Use audio key, NOT media."""
         if not self.session:
             return
+        if not self._audio_logged:
+            logger.info("First audio chunk received: %d bytes", len(audio_data))
+            self._audio_logged = True
         await self.session.send_realtime_input(
             audio=types.Blob(data=audio_data, mime_type="audio/pcm;rate=16000")
         )
@@ -241,6 +246,9 @@ class GeminiSession:
         if not self.session:
             return
         self._last_video_frame = jpeg_frame
+        if not self._video_logged:
+            logger.info("First video frame received: %d bytes", len(jpeg_frame))
+            self._video_logged = True
         await self.session.send_realtime_input(
             video=types.Blob(data=jpeg_frame, mime_type="image/jpeg")
         )
@@ -288,6 +296,7 @@ class GeminiSession:
 
     async def _handle_response(self, response):
         """Process a single response from Gemini."""
+        logger.debug("Gemini response: %s", type(response).__name__)
         server_content = getattr(response, "server_content", None)
         tool_call = getattr(response, "tool_call", None)
         session_resumption_update = getattr(
@@ -341,6 +350,7 @@ class GeminiSession:
         """Dispatch tool calls and return results to Gemini."""
         responses = []
         for fc in function_calls:
+            fc_id = getattr(fc, "id", None)
             handler = self.tool_handlers.get(fc.name)
             if handler:
                 if self.on_tool_call_start:
@@ -350,6 +360,7 @@ class GeminiSession:
                     result = await handler(**args)
                     responses.append(
                         types.FunctionResponse(
+                            id=fc_id,
                             name=fc.name,
                             response={"result": result},
                         )
@@ -358,6 +369,7 @@ class GeminiSession:
                     logger.error("Tool %s failed: %s", fc.name, e)
                     responses.append(
                         types.FunctionResponse(
+                            id=fc_id,
                             name=fc.name,
                             response={"error": str(e)},
                         )
@@ -366,6 +378,7 @@ class GeminiSession:
                 logger.warning("Unknown tool: %s", fc.name)
                 responses.append(
                     types.FunctionResponse(
+                        id=fc_id,
                         name=fc.name,
                         response={"error": f"Unknown tool: {fc.name}"},
                     )
