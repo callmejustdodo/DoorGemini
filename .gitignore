@@ -24,6 +24,10 @@ terraform.tfvars
 .vscode/
 .idea/
 
+# Google OAuth credentials
+credentials.json
+token.json
+
 # OS
 .DS_Store
 
