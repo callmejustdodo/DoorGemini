@@ -160,7 +160,7 @@ async def set_webhook(webhook_url: str) -> bool:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 _api_url("setWebhook"),
-                json={"url": webhook_url, "allowed_updates": ["callback_query"]},
+                json={"url": webhook_url, "allowed_updates": ["callback_query", "message"]},
             )
             if resp.status_code == 200 and resp.json().get("ok"):
                 logger.info("Telegram webhook registered: %s", webhook_url)
@@ -170,6 +170,37 @@ async def set_webhook(webhook_url: str) -> bool:
                 return False
     except Exception as e:
         logger.error("Telegram webhook registration error: %s", e)
+        return False
+
+
+async def download_telegram_photo(file_id: str) -> bytes:
+    """Download a photo from Telegram by file_id."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Get file path
+        resp = await client.get(_api_url("getFile"), params={"file_id": file_id})
+        resp.raise_for_status()
+        file_path = resp.json()["result"]["file_path"]
+
+        # Download file
+        download_url = f"https://api.telegram.org/file/bot{settings.TELEGRAM_BOT_TOKEN}/{file_path}"
+        resp = await client.get(download_url)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def send_telegram_message(chat_id: str, text: str) -> bool:
+    """Send a plain text message to a Telegram chat."""
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                _api_url("sendMessage"),
+                json={"chat_id": chat_id, "text": text},
+            )
+            return resp.status_code == 200 and resp.json().get("ok", False)
+    except Exception as e:
+        logger.error("Failed to send Telegram message: %s", e)
         return False
 
 

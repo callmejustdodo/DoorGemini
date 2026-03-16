@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = ""
+    GCS_FACES_PREFIX: str = "faces/"
 
     # Owner
     OWNER_NAME: str = "Kyuhee"

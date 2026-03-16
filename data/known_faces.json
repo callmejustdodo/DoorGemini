@@ -2,16 +2,19 @@
   {
     "name": "Minsu",
     "relation": "friend",
-    "memo": "College classmate, usually visits on weekends"
+    "memo": "College classmate, usually visits on weekends",
+    "photo_gcs_path": null
   },
   {
     "name": "Jiyeon",
     "relation": "family",
-    "memo": "Sister, has a spare key"
+    "memo": "Sister, has a spare key",
+    "photo_gcs_path": null
   },
   {
     "name": "David",
     "relation": "colleague",
-    "memo": "Works on the same team"
+    "memo": "Works on the same team",
+    "photo_gcs_path": null
   }
 ]

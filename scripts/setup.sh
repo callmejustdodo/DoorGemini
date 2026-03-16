@@ -109,7 +109,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
   echo "==> Setting Telegram webhook..."
   curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
     -H "Content-Type: application/json" \
-    -d "{\"url\": \"${SERVICE_URL}/api/telegram/webhook\", \"allowed_updates\": [\"callback_query\", \"message\"]}" | python3 -m json.tool
+    -d "{\"url\": \"${SERVICE_URL}/api/telegram/webhook\", \"allowed_updates\": [\"callback_query\", \"message\"]}" | python3 -m json.tool || true
 fi
 
 echo ""

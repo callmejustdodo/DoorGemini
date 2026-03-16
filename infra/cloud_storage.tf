@@ -7,7 +7,8 @@ resource "google_storage_bucket" "screenshots" {
 
   lifecycle_rule {
     condition {
-      age = 7
+      age                = 7
+      matches_prefix     = ["screenshots/"]
     }
     action {
       type = "Delete"

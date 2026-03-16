@@ -6,6 +6,7 @@ class KnownPerson(BaseModel):
     name: str
     relation: str
     memo: str | None = None
+    photo_gcs_path: str | None = None
 
 
 class Notification(BaseModel):

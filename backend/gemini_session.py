@@ -27,9 +27,11 @@ and what they need. Use tools proactively — don't wait to be asked.
 
 ### Known Visitor (says a name)
 1. They give a name → call check_known_faces AND check_calendar together
-2. If known + has appointment → "Hi [name]! You have your [appointment] at [time], right?" \
+2. If check_known_faces returns a reference photo, COMPARE it visually with the person you see \
+in the camera. If the face matches → confirm identity. If it doesn't match → treat as suspicious.
+3. If known + has appointment → "Hi [name]! You have your [appointment] at [time], right?" \
 → send_telegram_alert(urgency="medium", visitor_type="known_person") → wait for owner's reply
-3. When owner sends a command via Telegram → relay it naturally: "Great news, [name]! {owner_name} says come on in!"
+4. When owner sends a command via Telegram → relay it naturally: "Great news, [name]! {owner_name} says come on in!"
 
 ### Suspicious / Unverifiable
 1. Can't verify identity after 2-3 exchanges → capture_screenshot immediately
@@ -90,14 +92,15 @@ TOOL_DECLARATIONS = [
                 name="check_known_faces",
                 description=(
                     "Check if the visitor is a registered known person. "
-                    "Call when a visitor gives their name."
+                    "Call when a visitor gives their name. "
+                    "May return a reference photo — compare it visually with the visitor in the camera."
                 ),
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
                         "name": types.Schema(
                             type=types.Type.STRING,
-                            description="Name of the visitor",
+                            description="Name of the visitor (optional — omit to list all registered names)",
                         )
                     },
                 ),
@@ -355,8 +358,13 @@ class GeminiSession:
             await self._attempt_resumption()
 
     async def _handle_tool_calls(self, function_calls):
-        """Dispatch tool calls and return results to Gemini."""
+        """Dispatch tool calls and return results to Gemini.
+
+        Handlers may return a tuple (result_dict, image_bytes_list) to inject
+        reference photos into the session for visual comparison.
+        """
         responses = []
+        images_to_inject = []
         for fc in function_calls:
             fc_id = getattr(fc, "id", None)
             handler = self.tool_handlers.get(fc.name)
@@ -365,7 +373,15 @@ class GeminiSession:
                     await self._call(self.on_tool_call_start, fc.name)
                 try:
                     args = dict(fc.args) if fc.args else {}
-                    result = await handler(**args)
+                    raw_result = await handler(**args)
+
+                    # Support tuple return: (result_dict, [image_bytes, ...])
+                    if isinstance(raw_result, tuple) and len(raw_result) == 2:
+                        result, photos = raw_result
+                        images_to_inject.extend(photos)
+                    else:
+                        result = raw_result
+
                     responses.append(
                         types.FunctionResponse(
                             id=fc_id,
@@ -391,6 +407,18 @@ class GeminiSession:
                         response={"error": f"Unknown tool: {fc.name}"},
                     )
                 )
+
+        # Inject reference photos as video frames before the tool response
+        # so Gemini can see them alongside the live feed for comparison
+        if images_to_inject and self.session:
+            for photo_bytes in images_to_inject:
+                try:
+                    await self.session.send_realtime_input(
+                        video=types.Blob(data=photo_bytes, mime_type="image/jpeg")
+                    )
+                    logger.info("Injected reference photo (%d bytes)", len(photo_bytes))
+                except Exception as e:
+                    logger.error("Failed to inject reference photo: %s", e)
 
         if responses and self.session:
             await self.session.send_tool_response(function_responses=responses)

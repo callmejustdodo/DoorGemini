@@ -16,7 +16,12 @@ from backend.config import settings
 from backend.gemini_session import GeminiSession
 from backend.models import DoorbellSession, Notification
 from backend.tools.screenshot import set_last_frame
-from backend.tools.telegram import answer_callback_query, set_webhook
+from backend.tools.telegram import (
+    answer_callback_query,
+    download_telegram_photo,
+    send_telegram_message,
+    set_webhook,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -209,6 +214,57 @@ async def get_notifications():
     return [n.model_dump() for n in notifications]
 
 
+async def _handle_telegram_message(message: dict, chat_id: str):
+    """Handle Telegram messages for face registration.
+
+    Commands (via photo caption):
+      add <Name> <relation> <memo>   — register face with photo
+      remove <Name>                  — remove face from DB
+
+    Text-only commands:
+      remove <Name>                  — remove face from DB
+    """
+    from backend.tools.face_registration import register_face, remove_face
+
+    caption = message.get("caption", "").strip()
+    text = message.get("text", "").strip()
+    photos = message.get("photo", [])
+
+    # Photo + caption starting with "add"
+    if photos and caption.lower().startswith("add "):
+        parts = caption[4:].strip().split(None, 2)
+        if not parts:
+            await send_telegram_message(chat_id, "Usage: add <Name> <relation> <memo>")
+            return
+
+        name = parts[0]
+        relation = parts[1] if len(parts) > 1 else "unknown"
+        memo = parts[2] if len(parts) > 2 else ""
+
+        # Download the largest photo
+        file_id = photos[-1]["file_id"]
+        try:
+            photo_bytes = await download_telegram_photo(file_id)
+            result = await register_face(photo_bytes, name, relation, memo)
+            status = result["status"]
+            await send_telegram_message(
+                chat_id, f"Face {status}: {name} ({relation})"
+            )
+        except Exception as e:
+            logger.error("Face registration failed: %s", e)
+            await send_telegram_message(chat_id, f"Registration failed: {e}")
+        return
+
+    # Text command: "remove <Name>"
+    cmd = caption or text
+    if cmd.lower().startswith("remove "):
+        name = cmd[7:].strip()
+        if name:
+            result = await remove_face(name)
+            await send_telegram_message(chat_id, f"Face {result['status']}: {name}")
+        return
+
+
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(request: Request):
     """Telegram webhook endpoint — handles callback_query from inline buttons.
@@ -219,6 +275,15 @@ async def telegram_webhook(request: Request):
     global active_session
 
     payload = await request.json()
+
+    # Handle message (photo registration via caption)
+    message = payload.get("message")
+    if message:
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        # Security: only accept from configured chat
+        if chat_id == settings.TELEGRAM_CHAT_ID:
+            await _handle_telegram_message(message, chat_id)
+        return JSONResponse({"ok": True})
 
     # Handle callback_query (inline button press)
     callback_query = payload.get("callback_query")
