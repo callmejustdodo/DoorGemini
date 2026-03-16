@@ -274,6 +274,7 @@
     }, 4000);
   }
 
+  let notifHideTimeout = null;
   function addNotification(msg) {
     const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     const item = document.createElement('div');
@@ -283,6 +284,11 @@
     notifLog.classList.add('has-items');
     // Keep max 20
     while (notifLog.children.length > 20) notifLog.removeChild(notifLog.lastChild);
+    // Auto-hide after 3s
+    clearTimeout(notifHideTimeout);
+    notifHideTimeout = setTimeout(function() {
+      notifLog.classList.remove('has-items');
+    }, 3000);
   }
 
   // --- Media Capture ---
