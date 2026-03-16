@@ -170,6 +170,7 @@ class GeminiSession:
         self.on_subtitle: Callable[[str, str], Any] | None = None
         self.on_tool_call_start: Callable[[str], Any] | None = None
         self.on_interrupted: Callable[[], Any] | None = None
+        self.on_session_resumed: Callable[[], Any] | None = None
 
     def _build_config(self) -> types.LiveConnectConfig:
         system_prompt = SYSTEM_PROMPT.format(
@@ -266,12 +267,24 @@ class GeminiSession:
     async def inject_text(self, text: str):
         """Inject text input (e.g., Telegram owner command) into the session."""
         if not self.session:
-            return
-        await self.session.send_realtime_input(text=text)
+            logger.warning("inject_text called but session is None")
+            return False
+        try:
+            await self.session.send_realtime_input(text=text)
+            logger.info("Text injected into Gemini session: %s", text[:80])
+            return True
+        except Exception as e:
+            logger.error("Failed to inject text: %s", e)
+            return False
 
     def get_last_frame(self) -> bytes | None:
         """Get the most recent video frame for screenshot capture."""
         return self._last_video_frame
+
+    @property
+    def is_alive(self) -> bool:
+        """Check if the Gemini session is active and the receive loop is running."""
+        return self._running and self.session is not None
 
     async def _receive_loop(self):
         """Main loop to receive and process messages from Gemini."""
@@ -296,6 +309,8 @@ class GeminiSession:
                     logger.error("Gemini receive error (turn %d): %s", turn, e)
                     if self._resumption_handle:
                         await self._attempt_resumption()
+                        if self.on_session_resumed and self.session:
+                            await self._call(self.on_session_resumed)
                     else:
                         logger.error("No resumption handle, stopping receive loop")
                         break
@@ -303,7 +318,9 @@ class GeminiSession:
             raise
         except Exception as e:
             logger.error("Gemini receive loop fatal error: %s", e)
-        logger.info("Receive loop exited after %d turns", turn)
+        finally:
+            logger.info("Receive loop exited after %d turns", turn)
+            # Do NOT set _running=False here — disconnect() manages that
 
     async def _handle_response(self, response):
         """Process a single response from Gemini."""
@@ -356,6 +373,8 @@ class GeminiSession:
         if go_away:
             logger.warning("Received GoAway signal, triggering session resumption")
             await self._attempt_resumption()
+            if self.on_session_resumed and self.session:
+                await self._call(self.on_session_resumed)
 
     async def _handle_tool_calls(self, function_calls):
         """Dispatch tool calls and return results to Gemini.

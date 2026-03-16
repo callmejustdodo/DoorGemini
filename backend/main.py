@@ -117,12 +117,35 @@ async def doorbell_websocket(ws: WebSocket):
         except Exception:
             pass
 
+    async def on_session_resumed():
+        msg = json.dumps({"type": "session_state", "connected": True, "resumable": True})
+        frame = bytes([FRAME_CONTROL]) + msg.encode("utf-8")
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            pass
+
     session.on_audio = on_audio
     session.on_subtitle = on_subtitle
     session.on_interrupted = on_interrupted
     session.on_tool_call_start = on_tool_call_start
+    session.on_session_resumed = on_session_resumed
 
     active_session = session
+
+    # Keepalive: send ping to frontend every 20s to prevent WebSocket timeout
+    async def keepalive_loop():
+        while True:
+            await asyncio.sleep(20)
+            try:
+                ping_msg = json.dumps({"type": "ping"})
+                await ws.send_bytes(
+                    bytes([FRAME_CONTROL]) + ping_msg.encode("utf-8")
+                )
+            except Exception:
+                break
+
+    keepalive_task = None
 
     try:
         await session.connect()
@@ -137,6 +160,8 @@ async def doorbell_websocket(ws: WebSocket):
 
         doorbell_state.status = "active"
         doorbell_state.started_at = datetime.now()
+
+        keepalive_task = asyncio.create_task(keepalive_loop())
 
         # Main receive loop: read binary frames from the client
         while True:
@@ -181,6 +206,8 @@ async def doorbell_websocket(ws: WebSocket):
         except Exception:
             pass
     finally:
+        if keepalive_task:
+            keepalive_task.cancel()
         await session.disconnect()
         active_session = None
         doorbell_state.status = "idle"
@@ -301,15 +328,20 @@ async def telegram_webhook(request: Request):
 
     text = command_map.get(callback_data)
 
-    if text and active_session:
-        await active_session.inject_text(text)
-        # Answer callback to dismiss Telegram loading indicator
-        await answer_callback_query(callback_query_id, f"Command sent: {callback_data}")
-        logger.info("Owner command relayed: %s", callback_data)
-        return JSONResponse({"ok": True, "relayed": callback_data})
+    if text and active_session and active_session.is_alive:
+        success = await active_session.inject_text(text)
+        if success:
+            await answer_callback_query(callback_query_id, f"Command sent: {callback_data}")
+            logger.info("Owner command relayed: %s", callback_data)
+            return JSONResponse({"ok": True, "relayed": callback_data})
+        else:
+            await answer_callback_query(callback_query_id, "Failed to relay command")
+            return JSONResponse({"ok": True, "relayed": None})
 
+    reason = "No active session" if not active_session else "Session not alive"
+    logger.warning("Telegram callback ignored: %s (data=%s)", reason, callback_data)
     if callback_query_id:
-        await answer_callback_query(callback_query_id, "No active session")
+        await answer_callback_query(callback_query_id, reason)
 
     return JSONResponse({"ok": True, "relayed": None})
 
