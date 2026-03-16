@@ -119,8 +119,11 @@ The phone ↔ backend WebSocket uses binary frames with a 1-byte type prefix:
 Control message types:
 ```json
 {"type": "subtitle", "text": "...", "speaker": "ai"|"visitor"}
-{"type": "notification", "data": { ... Notification object ... }}
+{"type": "tool_call", "tool": "check_gmail_orders", "label": "📧 Check Gmail Orders"}
+{"type": "tool_result", "tool": "check_gmail_orders", "label": "📦 Order confirmed", "status": "success"|"fail"}
+{"type": "session_state", "connected": true, "resumable": true}
 {"type": "status", "status": "idle"|"active"|"caution"}
+{"type": "ping"}
 ```
 
 ---
@@ -135,7 +138,6 @@ DoorbellAgent (google-genai Live API session via gemini_session.py)
 ├── Transcription: input_transcription + output_transcription enabled
 ├── Session Config:
 │   ├── response_modalities: [AUDIO]  (TEXT and AUDIO cannot coexist)
-│   ├── context_window_compression: enabled (for sessions > 2 min)
 │   └── session_resumption: enabled (handle connection resets)
 └── Tools:
     ├── check_gmail_orders   — Match delivery with Gmail order history
@@ -149,7 +151,7 @@ DoorbellAgent (google-genai Live API session via gemini_session.py)
 
 | Limit | Value | Mitigation |
 |---|---|---|
-| Audio + video session | ~2 min without compression | Enable `context_window_compression` in `LiveConnectConfig` |
+| Audio + video session | ~10 min | Session resumption with stored handle on GoAway/disconnect |
 | Connection lifetime | ~10 min | Implement session resumption; reconnect before timeout |
 | Response modality | AUDIO **or** TEXT, not both | Use AUDIO only; subtitles via `output_transcription` |
 | `send_realtime_input` | Use `audio=` and `video=` keys separately | Never use `media=` key (deprecated) |
@@ -201,7 +203,7 @@ Visitor arrives
 | Model | `gemini-2.5-flash-native-audio-preview-12-2025` |
 | SDK | `google-genai` via `client.aio.live.connect()` |
 | Transcription | `input_transcription` + `output_transcription` for subtitles |
-| Compression | `context_window_compression` for sessions > 2 min |
+| Resumption | `session_resumption` with stored handle for reconnection |
 
 ---
 
@@ -303,10 +305,11 @@ Google Cloud Project
 │       └── Lifecycle: auto-delete after 7 days
 │
 ├── Secret Manager
+│   ├── gemini-api-key
 │   ├── telegram-bot-token
-│   ├── gmail-oauth-credentials
-│   ├── calendar-oauth-credentials
-│   └── gemini-api-key
+│   ├── google-client-id
+│   ├── google-client-secret
+│   └── google-refresh-token
 │
 └── IAM
     └── ai-doorbell-sa               ← Service account
@@ -319,9 +322,12 @@ Google Cloud Project
 
 ```
 scripts/
-├── deploy.sh            # Full deploy: build → push → terraform apply
+├── setup.sh             # First-time: enable APIs → build image → terraform apply → webhook
+├── deploy.sh            # Redeploy: build → push → update Cloud Run → webhook
+├── run.sh               # Local dev: uvicorn with --reload
+├── destroy.sh           # Tear down all Terraform resources + remove webhook
 ├── build-and-push.sh    # Build Docker image and push to Artifact Registry
-└── destroy.sh           # Tear down all infrastructure
+└── auth_google.py       # One-time OAuth2 consent flow
 ```
 
 ### Dockerfile

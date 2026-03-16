@@ -272,19 +272,25 @@ class GeminiSession:
 
     async def _receive_loop(self):
         """Main loop to receive and process messages from Gemini."""
+        turn = 0
         try:
             while self._running and self.session:
+                turn += 1
+                logger.info("Receive loop: starting turn %d", turn)
                 try:
+                    msg_count = 0
                     async for response in self.session.receive():
                         if not self._running:
                             break
+                        msg_count += 1
                         await self._handle_response(response)
+                    logger.info("Receive loop: turn %d ended after %d messages", turn, msg_count)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     if not self._running:
                         break
-                    logger.error("Gemini receive error: %s", e)
+                    logger.error("Gemini receive error (turn %d): %s", turn, e)
                     if self._resumption_handle:
                         await self._attempt_resumption()
                     else:
@@ -294,10 +300,11 @@ class GeminiSession:
             raise
         except Exception as e:
             logger.error("Gemini receive loop fatal error: %s", e)
+        logger.info("Receive loop exited after %d turns", turn)
 
     async def _handle_response(self, response):
         """Process a single response from Gemini."""
-        logger.debug("Gemini response: %s", type(response).__name__)
+        logger.info("Gemini response: %s", type(response).__name__)
         server_content = getattr(response, "server_content", None)
         tool_call = getattr(response, "tool_call", None)
         session_resumption_update = getattr(

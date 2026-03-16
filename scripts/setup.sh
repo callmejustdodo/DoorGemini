@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First-time GCP project setup: enables APIs, creates tfstate bucket, provisions infra.
+# First-time GCP project setup: enables APIs, builds image, provisions infra, sets webhook.
 # Usage: ./scripts/setup.sh
 set -euo pipefail
 
@@ -13,6 +13,9 @@ fi
 
 PROJECT_ID="${GCP_PROJECT_ID:-molthome}"
 REGION="${GCP_REGION:-asia-northeast3}"
+SERVICE_NAME="ai-doorbell"
+REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/ai-doorbell"
+IMAGE="${REGISTRY}/backend:latest"
 
 echo "==> Setting up GCP project: $PROJECT_ID ($REGION)"
 
@@ -45,7 +48,7 @@ else
   echo "==> Terraform state bucket already exists"
 fi
 
-# 4. Create terraform.tfvars from .env
+# 4. Generate terraform.tfvars from .env
 TFVARS="$PROJECT_ROOT/infra/terraform.tfvars"
 echo "==> Generating $TFVARS from .env..."
 cat > "$TFVARS" <<EOF
@@ -62,18 +65,55 @@ language              = "${LANGUAGE:-en}"
 delivery_instructions = "${DELIVERY_INSTRUCTIONS:-Please leave it at the door}"
 EOF
 
-# 5. Terraform init + apply
-echo "==> Provisioning infrastructure with Terraform..."
+# 5. Build & push Docker image (must exist before Cloud Run creation)
+echo "==> Configuring Docker for Artifact Registry..."
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+# Create Artifact Registry if not exists (terraform may not have run yet)
+if ! gcloud artifacts repositories describe ai-doorbell --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+  echo "==> Creating Artifact Registry..."
+  gcloud artifacts repositories create ai-doorbell \
+    --repository-format=docker \
+    --location="$REGION" \
+    --project="$PROJECT_ID" \
+    --quiet
+fi
+
+echo "==> Building Docker image..."
+cd "$PROJECT_ROOT"
+docker build --platform linux/amd64 -t "$IMAGE" .
+
+echo "==> Pushing to Artifact Registry..."
+docker push "$IMAGE"
+
+# 6. Terraform init
+echo "==> Initializing Terraform..."
 cd "$PROJECT_ROOT/infra"
 terraform init -input=false
+
+# 7. Import pre-existing secrets (ignore errors if already in state or don't exist)
+echo "==> Importing pre-existing resources..."
+for SECRET in gemini-api-key telegram-bot-token google-client-id google-client-secret google-refresh-token; do
+  terraform import "google_secret_manager_secret.$(echo $SECRET | tr '-' '_')" \
+    "projects/$PROJECT_ID/secrets/$SECRET" 2>/dev/null || true
+done
+
+# 8. Terraform apply
+echo "==> Provisioning infrastructure with Terraform..."
 terraform apply -auto-approve
 
-# 6. Print outputs
+# 9. Get service URL and set Telegram webhook
+SERVICE_URL=$(terraform output -raw service_url)
+
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  echo "==> Setting Telegram webhook..."
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d "{\"url\": \"${SERVICE_URL}/api/telegram/webhook\", \"allowed_updates\": [\"callback_query\", \"message\"]}" | python3 -m json.tool
+fi
+
 echo ""
 echo "========================================="
-echo "  GCP infrastructure provisioned!"
-echo ""
-terraform output
-echo ""
-echo "  Next: ./scripts/deploy.sh"
+echo "  AI Doorbell deployed!"
+echo "  URL: $SERVICE_URL"
 echo "========================================="
